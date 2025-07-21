@@ -1,0 +1,18 @@
+[project]
+name = "websocket-server"
+version = "0.1.0"
+description = "A modular FastAPI WebSocket server for audio streaming."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.poetry.dependencies]
+fastapi = ">=0.100.0"
+uvicorn = ">=0.23.0"
+pydantic = ">=2.0.0"
+python-dotenv = ">=1.1.1"
+
+[tool.poetry.dev-dependencies]
+ruff = "*"
+flake8 = "*"
+black = "*"
