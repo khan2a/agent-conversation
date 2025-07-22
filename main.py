@@ -1,7 +1,8 @@
 import os
 import logging
-from fastapi import FastAPI, Request, Query
-from fastapi.responses import Response, JSONResponse
+from pathlib import Path
+from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi.responses import Response, JSONResponse, FileResponse
 from routers.websocket_audio import router as websocket_audio_router
 from pydantic import RootModel
 from typing import Optional
@@ -40,6 +41,30 @@ async def callback_endpoint(request: Request) -> Response:
     return Response(status_code=204)
 
 
+@app.get("/audio/{filename}")
+async def serve_audio_file(filename: str):
+    """Serve audio files directly via HTTP for comparison with WebSocket streaming."""
+    audio_dir = Path("audio_files")
+    file_path = audio_dir / filename
+    
+    # Security check - ensure file is in audio directory
+    try:
+        file_path.resolve().relative_to(audio_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    
+    # Check if file exists
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Audio file '{filename}' not found")
+    
+    # Check file extension
+    supported_formats = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac'}
+    if file_path.suffix.lower() not in supported_formats:
+        raise HTTPException(status_code=400, detail="Unsupported audio format")
+    
+    return FileResponse(file_path)
+
+
 @app.get("/ncco/talk")
 def ncco_talk() -> JSONResponse:
     ncco = [
@@ -62,7 +87,8 @@ def ncco_connect(endpoint: str = Query(..., description="Endpoint string, e.g. w
     if endpoint.startswith("ws://") or endpoint.startswith("wss://"):
         endpoint_obj = {
             "type": "websocket",
-            "uri": endpoint
+            "uri": endpoint,
+            "content-type": "audio/l16;rate=8000"
         }
     elif endpoint.startswith("sip:"):
         endpoint_obj = {

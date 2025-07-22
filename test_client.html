@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Audio Player Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        #status {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 3px;
+        }
+        #fileInput {
+            margin: 10px 0;
+        }
+        .log {
+            background-color: #f9f9f9;
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Audio Server Test</h1>
+    
+    <div class="section">
+        <h2>Audio File Player</h2>
+        <input type="text" id="filename" placeholder="Enter filename (e.g., test_tone.wav)" style="width: 300px;">
+        <button onclick="playAudioFile()">Stream via WebSocket</button>
+        <button onclick="stopPlayback()">Stop Streaming</button>
+        <button onclick="playReceivedAudio()">Play Streamed Audio</button>
+        <button onclick="playDirectAudio()">Play Direct HTTP</button>
+        
+        <div id="status">Status: Disconnected</div>
+        
+        <audio id="audioPlayer" controls style="width: 100%; margin: 10px 0;"></audio>
+        
+        <h3>Instructions:</h3>
+        <ul>
+            <li>Place audio files in the <code>audio_files/</code> directory</li>
+            <li>Enter the filename above (including extension)</li>
+            <li><strong>Stream via WebSocket</strong>: Downloads file through WebSocket</li>
+            <li><strong>Play Streamed Audio</strong>: Plays the downloaded WebSocket data</li>
+            <li><strong>Play Direct HTTP</strong>: Plays file directly from server (for comparison)</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>Echo Test (Original Endpoint)</h2>
+        <button onclick="connectEcho()">Connect to Echo</button>
+        <button onclick="sendTestData()">Send Test Data</button>
+        <button onclick="disconnectEcho()">Disconnect</button>
+    </div>
+
+    <div class="section">
+        <h2>Connection Log</h2>
+        <div id="log" class="log"></div>
+        <button onclick="clearLog()">Clear Log</button>
+    </div>
+
+    <script>
+        let fileWebSocket = null;
+        let echoWebSocket = null;
+        let audioChunks = [];
+        let receivedAudioBlob = null;
+
+        function log(message) {
+            const logElement = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logElement.textContent += `[${timestamp}] ${message}\n`;
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        function updateStatus(message) {
+            document.getElementById('status').textContent = `Status: ${message}`;
+        }
+
+        function playAudioFile() {
+            const filename = document.getElementById('filename').value.trim();
+            if (!filename) {
+                alert('Please enter a filename');
+                return;
+            }
+
+            if (fileWebSocket) {
+                fileWebSocket.close();
+            }
+
+            const wsUrl = `ws://localhost:8000/ws/play/${encodeURIComponent(filename)}`;
+            log(`Connecting to: ${wsUrl}`);
+            updateStatus('Connecting...');
+
+            fileWebSocket = new WebSocket(wsUrl);
+            audioChunks = [];
+
+            fileWebSocket.onopen = function(event) {
+                log('Connected to audio file stream - expecting binary data only');
+                updateStatus(`Connected - Streaming: ${filename}`);
+            };
+
+            fileWebSocket.onmessage = function(event) {
+                if (typeof event.data === 'string') {
+                    // This shouldn't happen anymore with binary-only streaming
+                    log(`Unexpected text message: ${event.data}`);
+                } else {
+                    // Binary data (audio chunk) - this is what we expect
+                    audioChunks.push(event.data);
+                    // Debug: log first few bytes to verify binary data
+                    event.data.arrayBuffer().then(buffer => {
+                        const bytes = new Uint8Array(buffer);
+                        const firstBytes = Array.from(bytes.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                        log(`Received audio chunk: ${event.data.size} bytes (First 10 bytes: ${firstBytes}) (Total chunks: ${audioChunks.length})`);
+                    });
+                }
+            };
+
+            fileWebSocket.onclose = function(event) {
+                log(`Audio stream closed. Code: ${event.code}, Reason: ${event.reason}`);
+                updateStatus('Disconnected');
+                if (audioChunks.length > 0) {
+                    log(`Total audio chunks received: ${audioChunks.length}`);
+                    // Create a blob from all received chunks with correct MIME type
+                    const mimeType = getAudioMimeType(filename);
+                    receivedAudioBlob = new Blob(audioChunks, { type: mimeType });
+                    log(`Created audio blob: ${receivedAudioBlob.size} bytes, type: ${mimeType}`);
+                }
+            };
+
+            fileWebSocket.onerror = function(error) {
+                log(`WebSocket error: ${error}`);
+                updateStatus('Error');
+            };
+        }
+
+        function stopPlayback() {
+            if (fileWebSocket) {
+                fileWebSocket.close();
+                fileWebSocket = null;
+                updateStatus('Stopped');
+                log('Playback stopped by user');
+            }
+        }
+
+        function connectEcho() {
+            if (echoWebSocket) {
+                echoWebSocket.close();
+            }
+
+            const wsUrl = 'ws://localhost:8000/ws/echo';
+            log(`Connecting to echo endpoint: ${wsUrl}`);
+
+            echoWebSocket = new WebSocket(wsUrl);
+
+            echoWebSocket.onopen = function(event) {
+                log('Connected to echo endpoint');
+            };
+
+            echoWebSocket.onmessage = function(event) {
+                if (typeof event.data === 'string') {
+                    log(`Echo response (text): ${event.data}`);
+                } else {
+                    log(`Echo response (binary): ${event.data.size} bytes`);
+                }
+            };
+
+            echoWebSocket.onclose = function(event) {
+                log(`Echo connection closed. Code: ${event.code}`);
+            };
+
+            echoWebSocket.onerror = function(error) {
+                log(`Echo WebSocket error: ${error}`);
+            };
+        }
+
+        function sendTestData() {
+            if (!echoWebSocket || echoWebSocket.readyState !== WebSocket.OPEN) {
+                alert('Please connect to echo endpoint first');
+                return;
+            }
+
+            const testData = new Uint8Array([1, 2, 3, 4, 5]);
+            echoWebSocket.send(testData);
+            log(`Sent test binary data: ${testData.length} bytes`);
+        }
+
+        function disconnectEcho() {
+            if (echoWebSocket) {
+                echoWebSocket.close();
+                echoWebSocket = null;
+                log('Disconnected from echo endpoint');
+            }
+        }
+
+        function clearLog() {
+            document.getElementById('log').textContent = '';
+        }
+
+        function playReceivedAudio() {
+            if (!receivedAudioBlob) {
+                alert('No audio data received yet. Please stream a file first.');
+                return;
+            }
+
+            const audioPlayer = document.getElementById('audioPlayer');
+            const audioUrl = URL.createObjectURL(receivedAudioBlob);
+            audioPlayer.src = audioUrl;
+            audioPlayer.play().then(() => {
+                log('Playing received audio');
+            }).catch(error => {
+                log(`Error playing audio: ${error}`);
+            });
+
+            // Clean up the URL after playing to free memory
+            audioPlayer.addEventListener('ended', () => {
+                URL.revokeObjectURL(audioUrl);
+            }, { once: true });
+        }
+
+        // Auto-detect audio type based on filename
+        function getAudioMimeType(filename) {
+            const extension = filename.toLowerCase().split('.').pop();
+            const mimeTypes = {
+                'mp3': 'audio/mpeg',
+                'wav': 'audio/wav',
+                'ogg': 'audio/ogg',
+                'm4a': 'audio/mp4',
+                'aac': 'audio/aac',
+                'flac': 'audio/flac'
+            };
+            return mimeTypes[extension] || 'audio/mpeg';
+        }
+
+        function playDirectAudio() {
+            const filename = document.getElementById('filename').value.trim();
+            if (!filename) {
+                alert('Please enter a filename');
+                return;
+            }
+
+            const audioPlayer = document.getElementById('audioPlayer');
+            const audioUrl = `http://localhost:8000/audio/${encodeURIComponent(filename)}`;
+            audioPlayer.src = audioUrl;
+            
+            log(`Playing audio directly from: ${audioUrl}`);
+            
+            audioPlayer.play().then(() => {
+                log('Direct HTTP audio playback started');
+            }).catch(error => {
+                log(`Error playing direct audio: ${error}`);
+            });
+        }
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', function() {
+            if (fileWebSocket) fileWebSocket.close();
+            if (echoWebSocket) echoWebSocket.close();
+        });
+    </script>
+</body>
+</html>

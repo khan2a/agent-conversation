@@ -1,0 +1,13 @@
+# Test Audio File
+
+This is a placeholder for a test audio file. In a real implementation, you would place actual audio files (MP3, WAV, etc.) in this directory.
+
+For testing purposes, you can:
+
+1. Download a small audio file
+2. Place it in the audio_files directory  
+3. Connect to ws://localhost:8000/ws/play/filename.ext
+
+Example with a test file named "test.mp3":
+- Place test.mp3 in audio_files/
+- Connect to: ws://localhost:8000/ws/play/test.mp3
