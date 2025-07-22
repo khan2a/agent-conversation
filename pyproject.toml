@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "A modular FastAPI WebSocket server for audio streaming."
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "fastapi>=0.116.1",
+    "pydantic>=2.11.7",
+    "python-dotenv>=1.1.1",
+    "uvicorn[standard]>=0.35.0",
+]
 
 [tool.poetry.dependencies]
 fastapi = ">=0.100.0"
