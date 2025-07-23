@@ -7,6 +7,7 @@ from fastapi.responses import Response, JSONResponse, FileResponse
 from routers.websocket_audio import router as websocket_audio_router
 from pydantic import RootModel
 from dotenv import load_dotenv
+import openai
 
 # Load environment variables from .env file
 load_dotenv()
@@ -126,6 +127,77 @@ def search_callback_data(search_params: Dict[str, str]) -> List[Dict[str, Any]]:
     return matching_entries
 
 
+def query_openai(stored_text: str) -> str:
+    """
+    Send a query to OpenAI and retrieve the response.
+    
+    Args:
+        stored_text: The text to send to OpenAI
+        
+    Returns:
+        The response from OpenAI, or an error message if the request fails
+    """
+    try:
+        # Set API key from environment variable
+        openai.api_key = os.environ.get("OPENAI_API_KEY")
+        
+        if not openai.api_key:
+            logging.error("OPENAI_API_KEY not found in environment variables")
+            return "I'm sorry, I'm unable to process your request right now."
+        
+        # Create completion request
+        response = openai.chat.completions.create(
+            model="gpt-4",  # or "gpt-3.5-turbo"
+            messages=[
+                {"role": "user", "content": stored_text}
+            ],
+            max_tokens=150,  # Limit response length for voice calls
+            temperature=0.7
+        )
+        
+        # Extract the assistant's reply
+        reply = response.choices[0].message.content
+        logging.info(f"{Colors.CYAN}OpenAI response for '{stored_text}': '{reply}'{Colors.RESET}")
+        return reply
+        
+    except Exception as e:
+        logging.error(f"Error querying OpenAI: {e}")
+        return "I'm sorry, I encountered an error processing your request."
+
+
+def query_ollama(stored_text: str) -> str:
+    """
+    Send a query to Ollama and retrieve the response.
+    Placeholder implementation for now.
+    
+    Args:
+        stored_text: The text to send to Ollama
+        
+    Returns:
+        The response from Ollama (currently a placeholder)
+    """
+    logging.info(f"{Colors.CYAN}Ollama placeholder response for '{stored_text}'{Colors.RESET}")
+    return f"you said {stored_text}"
+
+
+def get_ai_agent_function(agent_type: str):
+    """
+    Get the appropriate AI agent function based on the agent type.
+    
+    Args:
+        agent_type: Either 'openai' or 'ollama'
+        
+    Returns:
+        The corresponding AI query function
+    """
+    if agent_type == "openai":
+        return query_openai
+    elif agent_type == "ollama":
+        return query_ollama
+    else:
+        raise ValueError(f"Unsupported AI agent type: {agent_type}")
+
+
 @app.get("/audio/{filename}")
 async def serve_audio_file(filename: str):
     """Serve audio files directly via HTTP for comparison with WebSocket streaming."""
@@ -155,29 +227,66 @@ def ncco_talk() -> JSONResponse:
     ncco = [
         {
             "action": "talk",
+            "style": 0,
+            "language": "en-GB",
             "text": "This is a sample Vonage NCCO talk action."
         }
     ]
     return JSONResponse(content=ncco)
 
 
-@app.api_route("/stts", methods=["GET", "POST"])
-async def stts_endpoint(request: Request) -> JSONResponse:
+def process_speech_results(payload: dict) -> None:
     """
-    Speech-to-Text Service endpoint that returns NCCO input action for speech recognition
-    and handles the speech input callback.
+    Process speech results from callback payload and store the highest confidence text.
+    
+    Args:
+        payload: The callback payload containing speech results
     """
-    if request.method == "GET":
-        # Get HOST_NAME from environment or use default
-        host_name = os.environ.get("HOST_NAME", "http://localhost:8000")
-        event_url = f"{host_name.rstrip('/')}/stts"
+    if 'speech' not in payload or 'results' not in payload['speech'] or not payload['speech']['results']:
+        return
+    
+    conversation_uuid = payload.get('conversation_uuid')
+    speech_results = payload['speech']['results']
+    
+    if not conversation_uuid or not speech_results:
+        return
+    
+    # Find the result with highest confidence
+    highest_confidence_result = max(speech_results, key=lambda x: float(x.get('confidence', 0)))
+    highest_confidence_text = highest_confidence_result.get('text', '')
+    highest_confidence_score = highest_confidence_result.get('confidence', '0')
+    
+    # Store only the highest confidence text for this conversation
+    speech_storage[conversation_uuid] = highest_confidence_text
+    
+    logging.info(f"{Colors.CYAN}Stored highest confidence speech for {conversation_uuid}: '{highest_confidence_text}' (confidence: {highest_confidence_score}){Colors.RESET}")
+    logging.info(f"{Colors.YELLOW}Total speech conversations stored: {len(speech_storage)}{Colors.RESET}")
 
-        tts = "Hello, how can I assist you today?"
 
+def generate_speech_response_ncco(conversation_uuid: str, event_url: str, ai_agent_func) -> List[dict]:
+    """
+    Generate NCCO response based on stored speech for a conversation.
+    
+    Args:
+        conversation_uuid: The conversation UUID to look up
+        event_url: The event URL for the input action
+        ai_agent_func: The AI agent function to use for generating responses
+        
+    Returns:
+        NCCO array with appropriate response
+    """
+    if conversation_uuid and conversation_uuid in speech_storage:
+        # Get the latest text stored for this conversation and query AI agent
+        stored_text = speech_storage[conversation_uuid]
+        ai_response = ai_agent_func(stored_text)
+        
         ncco = [
             {
                 "action": "talk",
-                "text": tts,
+                "text": ai_response,
+                "style": 0,
+                "language": "en-GB",
+                "bargeIn": True  # Allow barge-in for voice input
             },
             {
                 "action": "input",
@@ -185,79 +294,126 @@ async def stts_endpoint(request: Request) -> JSONResponse:
                 "type": ["speech"]
             }
         ]
-        logging.info(f"Generated NCCO for speech input: {ncco}")
+        logging.info(f"{Colors.YELLOW}Generated NCCO with AI response for {conversation_uuid}: '{ai_response}'{Colors.RESET}")
+        return ncco
+    else:
+        # No speech result found, use default greeting
+        ncco = [
+            {
+                "action": "talk",
+                "style": 0,
+                "language": "en-GB",
+                "text": "hello, how can i assist you today?"
+            },
+            {
+                "action": "input",
+                "eventUrl": [event_url],
+                "type": ["speech"]
+            }
+        ]
+        logging.info(f"{Colors.YELLOW}No speech found for {conversation_uuid}, using default greeting{Colors.RESET}")
+        return ncco
+
+
+def generate_initial_speech_ncco(event_url: str) -> List[dict]:
+    """
+    Generate initial NCCO for speech input.
+    
+    Args:
+        event_url: The event URL for the input action
+        
+    Returns:
+        NCCO array with talk and input actions
+    """
+    return [
+        {
+            "action": "talk",
+            "style": 0,
+            "language": "en-GB",
+            "text": "Hello, how can I assist you today?"
+        },
+        {
+            "action": "input",
+            "eventUrl": [event_url],
+            "type": ["speech"]
+        }
+    ]
+
+
+async def handle_stts_request(request: Request, agent_type: str) -> JSONResponse:
+    """
+    Common handler for STTS requests that delegates to appropriate AI agent.
+    
+    Args:
+        request: The FastAPI request object
+        agent_type: The AI agent type ('openai' or 'ollama')
+        
+    Returns:
+        JSONResponse with appropriate NCCO
+    """
+    # Get HOST_NAME from environment or use default
+    host_name = os.environ.get("HOST_NAME", "http://localhost:8000")
+    event_url = f"{host_name.rstrip('/')}/stts/{agent_type}"
+    
+    # Get the appropriate AI agent function
+    try:
+        ai_agent_func = get_ai_agent_function(agent_type)
+    except ValueError as e:
+        logging.error(str(e))
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    
+    if request.method == "GET":
+        ncco = generate_initial_speech_ncco(event_url)
+        logging.info(f"Generated NCCO for {agent_type} speech input: {ncco}")
         return JSONResponse(content=ncco)
     
-    elif request.method == "POST":
-        # Handle speech input callback
-        try:
-            payload = await request.json()
-            logging.info(f"Received speech input callback: {payload}")
-            
-            # Get HOST_NAME from environment or use default for event_url
-            host_name = os.environ.get("HOST_NAME", "http://localhost:8000")
-            event_url = f"{host_name.rstrip('/')}/stts"
-            
-            # Store the full payload in callback storage
-            callback_storage.append(payload)
-            
-            # Process speech results if available
-            if 'speech' in payload and 'results' in payload['speech'] and payload['speech']['results']:
-                conversation_uuid = payload.get('conversation_uuid')
-                speech_results = payload['speech']['results']
-                
-                if conversation_uuid and speech_results:
-                    # Find the result with highest confidence
-                    highest_confidence_result = max(speech_results, key=lambda x: float(x.get('confidence', 0)))
-                    highest_confidence_text = highest_confidence_result.get('text', '')
-                    highest_confidence_score = highest_confidence_result.get('confidence', '0')
-                    
-                    # Store only the highest confidence text for this conversation
-                    speech_storage[conversation_uuid] = highest_confidence_text
-                    
-                    logging.info(f"{Colors.CYAN}Stored highest confidence speech for {conversation_uuid}: '{highest_confidence_text}' (confidence: {highest_confidence_score}){Colors.RESET}")
-                    logging.info(f"{Colors.YELLOW}Total speech conversations stored: {len(speech_storage)}{Colors.RESET}")
-            
-            logging.info(f"{Colors.CYAN}Stored speech input data. Total callback entries: {len(callback_storage)}{Colors.RESET}")
-            
-            # Generate NCCO response based on stored speech
-            conversation_uuid = payload.get('conversation_uuid')
-            
-            if conversation_uuid and conversation_uuid in speech_storage:
-                # Get the latest text stored for this conversation
-                stored_text = speech_storage[conversation_uuid]
-                ncco = [
-                    {
-                        "action": "talk",
-                        "text": f"you said {stored_text}"
-                    },
-                    {
-                        "action": "input",
-                        "eventUrl": [event_url],
-                        "type": ["speech"]
-                    }
-                ]
-                logging.info(f"{Colors.YELLOW}Generated NCCO response for {conversation_uuid}: 'you said {stored_text}'{Colors.RESET}")
-            else:
-                # No speech result found, use default greeting
-                ncco = [
-                    {
-                        "action": "talk",
-                        "text": "hello, how can i assist you today?"
-                    },
-                    {
-                        "action": "input",
-                        "eventUrl": [event_url],
-                        "type": ["speech"]
-                    }
-                ]
-                logging.info(f"{Colors.YELLOW}No speech found for {conversation_uuid}, using default greeting{Colors.RESET}")
-            
-            return JSONResponse(content=ncco)
-            
-        except Exception as e:
-            logging.error(f"Error parsing speech input callback: {e}")
-            return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
+    # Handle POST request - speech input callback
+    try:
+        payload = await request.json()
+        logging.info(f"Received {agent_type} speech input callback: {payload}")
+        
+        # Store the full payload in callback storage
+        callback_storage.append(payload)
+        
+        # Process speech results if available
+        process_speech_results(payload)
+        
+        logging.info(f"{Colors.CYAN}Stored speech input data. Total callback entries: {len(callback_storage)}{Colors.RESET}")
+        
+        # Generate NCCO response based on stored speech
+        conversation_uuid = payload.get('conversation_uuid')
+        ncco = generate_speech_response_ncco(conversation_uuid, event_url, ai_agent_func)
+        
+        return JSONResponse(content=ncco)
+        
+    except Exception as e:
+        logging.error(f"Error parsing {agent_type} speech input callback: {e}")
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
+
+
+@app.api_route("/stts/openai", methods=["GET", "POST"])
+async def stts_openai_endpoint(request: Request) -> JSONResponse:
+    """
+    Speech-to-Text Service endpoint using OpenAI for responses.
+    """
+    return await handle_stts_request(request, "openai")
+
+
+@app.api_route("/stts/ollama", methods=["GET", "POST"])
+async def stts_ollama_endpoint(request: Request) -> JSONResponse:
+    """
+    Speech-to-Text Service endpoint using Ollama for responses.
+    """
+    return await handle_stts_request(request, "ollama")
+
+
+@app.api_route("/stts", methods=["GET", "POST"])
+async def stts_endpoint(request: Request) -> JSONResponse:
+    """
+    Default Speech-to-Text Service endpoint that uses OpenAI.
+    For backward compatibility.
+    """
+    return await handle_stts_request(request, "openai")
 
 
 @app.get("/speech")
