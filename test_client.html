@@ -47,7 +47,20 @@
     
     <div class="section">
         <h2>Audio File Player</h2>
-        <input type="text" id="filename" placeholder="Enter filename (e.g., test_tone.wav)" style="width: 300px;">
+        <div style="margin: 10px 0;">
+            <label for="wsUrl">WebSocket URL:</label><br>
+            <input type="text" id="wsUrl" placeholder="ws://localhost:8000/ws/play/filename.mp3" 
+                   value="ws://localhost:8000/ws/play/optigan-48000hz-stereo.mp3" 
+                   style="width: 100%; margin: 5px 0; padding: 8px; font-family: monospace;">
+        </div>
+        
+        <div style="margin: 10px 0;">
+            <label for="httpUrl">HTTP URL:</label><br>
+            <input type="text" id="httpUrl" placeholder="http://localhost:8000/audio/filename.mp3" 
+                   value="http://localhost:8000/audio/optigan-48000hz-stereo.mp3" 
+                   style="width: 100%; margin: 5px 0; padding: 8px; font-family: monospace;">
+        </div>
+        
         <button onclick="playAudioFile()">Stream via WebSocket</button>
         <button onclick="stopPlayback()">Stop Streaming</button>
         <button onclick="playReceivedAudio()">Play Streamed Audio</button>
@@ -59,11 +72,13 @@
         
         <h3>Instructions:</h3>
         <ul>
-            <li>Place audio files in the <code>audio_files/</code> directory</li>
-            <li>Enter the filename above (including extension)</li>
-            <li><strong>Stream via WebSocket</strong>: Downloads file through WebSocket</li>
+            <li><strong>WebSocket URL</strong>: Enter complete WebSocket URL including filename (e.g., ws://server:8000/ws/play/song.mp3)</li>
+            <li><strong>HTTP URL</strong>: Enter complete HTTP URL for direct playback (e.g., http://server:8000/audio/song.mp3)</li>
+            <li><strong>Stream via WebSocket</strong>: Downloads file through WebSocket using the WebSocket URL</li>
             <li><strong>Play Streamed Audio</strong>: Plays the downloaded WebSocket data</li>
-            <li><strong>Play Direct HTTP</strong>: Plays file directly from server (for comparison)</li>
+            <li><strong>Play Direct HTTP</strong>: Plays file directly from server using the HTTP URL</li>
+            <li><strong>L16 Support</strong>: MP3 files are automatically converted to L16 (raw PCM) format</li>
+            <li><strong>Sample Rates</strong>: Include 8000 or 16000 in filename for proper rate detection</li>
         </ul>
     </div>
 
@@ -97,10 +112,21 @@
             document.getElementById('status').textContent = `Status: ${message}`;
         }
 
+        function getFilenameFromUrl(url) {
+            // Extract filename from URL for L16 format detection
+            const parts = url.split('/');
+            return parts[parts.length - 1] || '';
+        }
+
         function playAudioFile() {
-            const filename = document.getElementById('filename').value.trim();
-            if (!filename) {
-                alert('Please enter a filename');
+            const wsUrl = document.getElementById('wsUrl').value.trim();
+            if (!wsUrl) {
+                alert('Please enter a WebSocket URL');
+                return;
+            }
+
+            if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
+                alert('WebSocket URL must start with ws:// or wss://');
                 return;
             }
 
@@ -108,7 +134,6 @@
                 fileWebSocket.close();
             }
 
-            const wsUrl = `ws://localhost:8000/ws/play/${encodeURIComponent(filename)}`;
             log(`Connecting to: ${wsUrl}`);
             updateStatus('Connecting...');
 
@@ -117,6 +142,7 @@
 
             fileWebSocket.onopen = function(event) {
                 log('Connected to audio file stream - expecting binary data only');
+                const filename = getFilenameFromUrl(wsUrl);
                 updateStatus(`Connected - Streaming: ${filename}`);
             };
 
@@ -142,6 +168,7 @@
                 if (audioChunks.length > 0) {
                     log(`Total audio chunks received: ${audioChunks.length}`);
                     // Create a blob from all received chunks with correct MIME type
+                    const filename = getFilenameFromUrl(wsUrl);
                     const mimeType = getAudioMimeType(filename);
                     receivedAudioBlob = new Blob(audioChunks, { type: mimeType });
                     log(`Created audio blob: ${receivedAudioBlob.size} bytes, type: ${mimeType}`);
@@ -168,10 +195,20 @@
                 echoWebSocket.close();
             }
 
-            const wsUrl = 'ws://localhost:8000/ws/echo';
-            log(`Connecting to echo endpoint: ${wsUrl}`);
+            // Extract base URL from WebSocket URL for echo endpoint
+            const wsUrl = document.getElementById('wsUrl').value.trim();
+            if (!wsUrl) {
+                alert('Please enter a WebSocket URL first');
+                return;
+            }
 
-            echoWebSocket = new WebSocket(wsUrl);
+            // Get base URL (remove the /ws/play/filename part)
+            const baseUrl = wsUrl.split('/ws/play/')[0];
+            const echoUrl = `${baseUrl}/ws/echo`;
+            
+            log(`Connecting to echo endpoint: ${echoUrl}`);
+
+            echoWebSocket = new WebSocket(echoUrl);
 
             echoWebSocket.onopen = function(event) {
                 log('Connected to echo endpoint');
@@ -223,19 +260,99 @@
                 return;
             }
 
-            const audioPlayer = document.getElementById('audioPlayer');
-            const audioUrl = URL.createObjectURL(receivedAudioBlob);
-            audioPlayer.src = audioUrl;
-            audioPlayer.play().then(() => {
-                log('Playing received audio');
-            }).catch(error => {
-                log(`Error playing audio: ${error}`);
-            });
+            const wsUrl = document.getElementById('wsUrl').value.trim();
+            const filename = getFilenameFromUrl(wsUrl);
+            
+            // Check if this is L16/raw PCM data that needs special handling
+            if (isL16Format(filename)) {
+                playL16Audio(receivedAudioBlob, filename);
+            } else {
+                // Standard audio formats
+                const audioPlayer = document.getElementById('audioPlayer');
+                const audioUrl = URL.createObjectURL(receivedAudioBlob);
+                audioPlayer.src = audioUrl;
+                audioPlayer.play().then(() => {
+                    log('Playing received audio');
+                }).catch(error => {
+                    log(`Error playing audio: ${error}`);
+                });
 
-            // Clean up the URL after playing to free memory
-            audioPlayer.addEventListener('ended', () => {
-                URL.revokeObjectURL(audioUrl);
-            }, { once: true });
+                // Clean up the URL after playing to free memory
+                audioPlayer.addEventListener('ended', () => {
+                    URL.revokeObjectURL(audioUrl);
+                }, { once: true });
+            }
+        }
+
+        // Check if filename suggests L16/raw PCM format
+        function isL16Format(filename) {
+            const lower = filename.toLowerCase();
+            return lower.includes('l16') || 
+                   lower.includes('pcm') || 
+                   lower.endsWith('.raw') ||
+                   lower.includes('converted_') || // Our converted MP3 files
+                   lower.endsWith('.mp3'); // MP3 files are converted to L16
+        }
+
+        // Get sample rate from filename
+        function getSampleRateFromFilename(filename) {
+            if (filename.includes('16000')) return 16000;
+            if (filename.includes('8000')) return 8000;
+            return 8000; // Default
+        }
+
+        async function playL16Audio(audioBlob, filename) {
+            try {
+                log('Detected L16/raw PCM format - using Web Audio API for playback');
+                
+                // Get audio parameters from filename
+                const sampleRate = getSampleRateFromFilename(filename);
+                const channels = 1; // Mono
+                const bitDepth = 16; // 16-bit
+                
+                log(`L16 Audio parameters: ${sampleRate}Hz, ${channels} channel(s), ${bitDepth}-bit`);
+                
+                // Create AudioContext
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Convert blob to ArrayBuffer
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const pcmData = new Int16Array(arrayBuffer);
+                
+                log(`L16 data: ${pcmData.length} samples, ${arrayBuffer.byteLength} bytes`);
+                
+                // Create AudioBuffer
+                const audioBuffer = audioContext.createBuffer(channels, pcmData.length, sampleRate);
+                
+                // Copy PCM data to AudioBuffer (convert from Int16 to Float32)
+                const channelData = audioBuffer.getChannelData(0);
+                for (let i = 0; i < pcmData.length; i++) {
+                    channelData[i] = pcmData[i] / 32768.0; // Convert to float [-1, 1]
+                }
+                
+                // Create and connect audio nodes
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                
+                // Play the audio
+                source.start();
+                log(`Playing L16 audio: ${(audioBuffer.duration).toFixed(2)} seconds`);
+                
+                // Update the HTML audio player display (for visual feedback)
+                const audioPlayer = document.getElementById('audioPlayer');
+                audioPlayer.src = ''; // Clear any previous source
+                
+                // Log completion
+                source.onended = () => {
+                    log('L16 audio playback completed');
+                    audioContext.close();
+                };
+                
+            } catch (error) {
+                log(`Error playing L16 audio: ${error}`);
+                alert(`Error playing L16 audio: ${error.message}`);
+            }
         }
 
         // Auto-detect audio type based on filename
@@ -247,23 +364,35 @@
                 'ogg': 'audio/ogg',
                 'm4a': 'audio/mp4',
                 'aac': 'audio/aac',
-                'flac': 'audio/flac'
+                'flac': 'audio/flac',
+                'raw': 'audio/l16',  // Raw PCM data
+                'l16': 'audio/l16'   // L16 format
             };
+            
+            // Special case: MP3 files are converted to L16 by our server
+            if (extension === 'mp3' || filename.includes('converted_')) {
+                return 'audio/l16';
+            }
+            
             return mimeTypes[extension] || 'audio/mpeg';
         }
 
         function playDirectAudio() {
-            const filename = document.getElementById('filename').value.trim();
-            if (!filename) {
-                alert('Please enter a filename');
+            const httpUrl = document.getElementById('httpUrl').value.trim();
+            if (!httpUrl) {
+                alert('Please enter an HTTP URL');
+                return;
+            }
+
+            if (!httpUrl.startsWith('http://') && !httpUrl.startsWith('https://')) {
+                alert('HTTP URL must start with http:// or https://');
                 return;
             }
 
             const audioPlayer = document.getElementById('audioPlayer');
-            const audioUrl = `http://localhost:8000/audio/${encodeURIComponent(filename)}`;
-            audioPlayer.src = audioUrl;
+            audioPlayer.src = httpUrl;
             
-            log(`Playing audio directly from: ${audioUrl}`);
+            log(`Playing audio directly from: ${httpUrl}`);
             
             audioPlayer.play().then(() => {
                 log('Direct HTTP audio playback started');
