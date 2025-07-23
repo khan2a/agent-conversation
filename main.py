@@ -85,10 +85,13 @@ def ncco_connect(endpoint: str = Query(..., description="Endpoint string, e.g. w
     # Determine endpoint type and build NCCO accordingly
     endpoint_obj = None
     if endpoint.startswith("ws://") or endpoint.startswith("wss://"):
+        # Default content type
+        content_type = "audio/l16;rate=16000" if "16000" in endpoint else "audio/l16;rate=8000"
+
         endpoint_obj = {
             "type": "websocket",
             "uri": endpoint,
-            "content-type": "audio/l16;rate=8000"
+            "content-type": content_type
         }
     elif endpoint.startswith("sip:"):
         endpoint_obj = {
