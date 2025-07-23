@@ -24,6 +24,9 @@ class Colors:
 # In-memory storage for callback data
 callback_storage: List[Dict[str, Any]] = []
 
+# In-memory storage for speech results (conversation_uuid -> highest confidence text)
+speech_storage: Dict[str, str] = {}
+
 app = FastAPI()
 
 app.include_router(websocket_audio_router)
@@ -156,6 +159,127 @@ def ncco_talk() -> JSONResponse:
         }
     ]
     return JSONResponse(content=ncco)
+
+
+@app.api_route("/stts", methods=["GET", "POST"])
+async def stts_endpoint(request: Request) -> JSONResponse:
+    """
+    Speech-to-Text Service endpoint that returns NCCO input action for speech recognition
+    and handles the speech input callback.
+    """
+    if request.method == "GET":
+        # Get HOST_NAME from environment or use default
+        host_name = os.environ.get("HOST_NAME", "http://localhost:8000")
+        event_url = f"{host_name.rstrip('/')}/stts"
+
+        tts = "Hello, how can I assist you today?"
+
+        ncco = [
+            {
+                "action": "talk",
+                "text": tts,
+            },
+            {
+                "action": "input",
+                "eventUrl": [event_url],
+                "type": ["speech"]
+            }
+        ]
+        logging.info(f"Generated NCCO for speech input: {ncco}")
+        return JSONResponse(content=ncco)
+    
+    elif request.method == "POST":
+        # Handle speech input callback
+        try:
+            payload = await request.json()
+            logging.info(f"Received speech input callback: {payload}")
+            
+            # Get HOST_NAME from environment or use default for event_url
+            host_name = os.environ.get("HOST_NAME", "http://localhost:8000")
+            event_url = f"{host_name.rstrip('/')}/stts"
+            
+            # Store the full payload in callback storage
+            callback_storage.append(payload)
+            
+            # Process speech results if available
+            if 'speech' in payload and 'results' in payload['speech'] and payload['speech']['results']:
+                conversation_uuid = payload.get('conversation_uuid')
+                speech_results = payload['speech']['results']
+                
+                if conversation_uuid and speech_results:
+                    # Find the result with highest confidence
+                    highest_confidence_result = max(speech_results, key=lambda x: float(x.get('confidence', 0)))
+                    highest_confidence_text = highest_confidence_result.get('text', '')
+                    highest_confidence_score = highest_confidence_result.get('confidence', '0')
+                    
+                    # Store only the highest confidence text for this conversation
+                    speech_storage[conversation_uuid] = highest_confidence_text
+                    
+                    logging.info(f"{Colors.CYAN}Stored highest confidence speech for {conversation_uuid}: '{highest_confidence_text}' (confidence: {highest_confidence_score}){Colors.RESET}")
+                    logging.info(f"{Colors.YELLOW}Total speech conversations stored: {len(speech_storage)}{Colors.RESET}")
+            
+            logging.info(f"{Colors.CYAN}Stored speech input data. Total callback entries: {len(callback_storage)}{Colors.RESET}")
+            
+            # Generate NCCO response based on stored speech
+            conversation_uuid = payload.get('conversation_uuid')
+            
+            if conversation_uuid and conversation_uuid in speech_storage:
+                # Get the latest text stored for this conversation
+                stored_text = speech_storage[conversation_uuid]
+                ncco = [
+                    {
+                        "action": "talk",
+                        "text": f"you said {stored_text}"
+                    },
+                    {
+                        "action": "input",
+                        "eventUrl": [event_url],
+                        "type": ["speech"]
+                    }
+                ]
+                logging.info(f"{Colors.YELLOW}Generated NCCO response for {conversation_uuid}: 'you said {stored_text}'{Colors.RESET}")
+            else:
+                # No speech result found, use default greeting
+                ncco = [
+                    {
+                        "action": "talk",
+                        "text": "hello, how can i assist you today?"
+                    },
+                    {
+                        "action": "input",
+                        "eventUrl": [event_url],
+                        "type": ["speech"]
+                    }
+                ]
+                logging.info(f"{Colors.YELLOW}No speech found for {conversation_uuid}, using default greeting{Colors.RESET}")
+            
+            return JSONResponse(content=ncco)
+            
+        except Exception as e:
+            logging.error(f"Error parsing speech input callback: {e}")
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
+
+
+@app.get("/speech")
+async def get_speech_results(conversation_uuid: Optional[str] = Query(None, description="Filter by conversation UUID")):
+    """
+    Get stored speech recognition results.
+    If conversation_uuid is provided, returns the result for that specific conversation.
+    Otherwise, returns all stored speech results.
+    """
+    if conversation_uuid:
+        if conversation_uuid in speech_storage:
+            return JSONResponse(content={
+                "conversation_uuid": conversation_uuid,
+                "text": speech_storage[conversation_uuid]
+            })
+        else:
+            raise HTTPException(status_code=404, detail=f"No speech result found for conversation_uuid: {conversation_uuid}")
+    else:
+        return JSONResponse(content={
+            "total_conversations": len(speech_storage),
+            "speech_results": speech_storage
+        })
 
 
 @app.get("/ncco/connect")
