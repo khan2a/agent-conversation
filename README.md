@@ -104,25 +104,159 @@ const playerWs = new WebSocket('ws://localhost:8000/ws/play/example.mp3');
 ```
 
 ## Callback Endpoint
-- URL: `/callback` (e.g., `https://e8097d851324.ngrok-free.app/callback`)
-- Method: `GET` or `POST`
-- Accepts: Any JSON body (for POST)
-- Returns: HTTP 204 No Content
-- The server will print the received JSON to the console.
 
-**Sample JSON for callback registration:**
+The `/callback` endpoint now includes advanced storage and search capabilities for received JSON data.
+
+### Features
+- **In-Memory Storage**: Automatically stores all received JSON payloads
+- **Search Functionality**: Query stored data using URL parameters
+- **Color-Coded Logging**: Important keywords are highlighted in console logs
+- **RESTful API**: GET requests for searching, POST requests for storing
+
+### Endpoint Details
+- **URL**: `/callback` (e.g., `https://e8097d851324.ngrok-free.app/callback`)
+- **Methods**: `GET` (search), `POST` (store)
+- **Storage**: JSON payloads stored in memory with automatic indexing
+- **Logging**: Color-coded console output with blinking keywords
+
+### POST - Store Callback Data
+Stores JSON data in memory and logs with color highlighting.
+
+**Example Request:**
+```bash
+curl -X POST https://e8097d851324.ngrok-free.app/callback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "e2116b90-8b58-49fb-8487-0dcb0a8d29b5",
+    "conversation_uuid": "CON-765ac2c5-8191-45fe-9ef3-c44ef1138868",
+    "status": "completed",
+    "duration": "1",
+    "from": "Unknown",
+    "to": "wss://khan2a.ngrok.io/ws/play/ff-16b-1c-16000hz.mp3"
+  }'
+```
+
+**Response:** HTTP 204 No Content
+
+**Console Output:**
+```
+2025-07-23 16:34:53,644 [INFO] Received callback JSON: {"uuid": "e2116b90-8b58-49fb-8487-0dcb0a8d29b5", "conversation_uuid": "CON-765ac2c5-8191-45fe-9ef3-c44ef1138868", "status": "completed", ...}
+                                                          ^^^^ (blinking yellow)    ^^^^^^^^^^^^^^^^^ (blinking yellow)                  ^^^^^^ (blinking cyan)
+2025-07-23 16:34:53,645 [INFO] Stored callback data. Total entries: 1  (in yellow)
+```
+
+### GET - Search Stored Data
+
+#### Retrieve All Data
+Get all stored callback entries.
+
+**Request:**
+```bash
+curl https://e8097d851324.ngrok-free.app/callback
+```
+
+**Response:**
+```json
+{
+  "total_entries": 5,
+  "data": [
+    {
+      "uuid": "e2116b90-8b58-49fb-8487-0dcb0a8d29b5",
+      "conversation_uuid": "CON-765ac2c5-8191-45fe-9ef3-c44ef1138868",
+      "status": "completed",
+      "duration": "1"
+    },
+    // ... more entries
+  ]
+}
+```
+
+#### Search by UUID
+Find entries matching a specific UUID.
+
+**Request:**
+```bash
+curl "https://e8097d851324.ngrok-free.app/callback?uuid=e2116b90-8b58-49fb-8487-0dcb0a8d29b5"
+```
+
+**Response:**
+```json
+{
+  "query": {
+    "uuid": "e2116b90-8b58-49fb-8487-0dcb0a8d29b5"
+  },
+  "total_matches": 1,
+  "data": [
+    {
+      "uuid": "e2116b90-8b58-49fb-8487-0dcb0a8d29b5",
+      "conversation_uuid": "CON-765ac2c5-8191-45fe-9ef3-c44ef1138868",
+      "status": "completed",
+      "duration": "1",
+      "from": "Unknown",
+      "to": "wss://khan2a.ngrok.io/ws/play/ff-16b-1c-16000hz.mp3"
+    }
+  ]
+}
+```
+
+#### Search by Status
+Find all entries with a specific status.
+
+**Request:**
+```bash
+curl "https://e8097d851324.ngrok-free.app/callback?status=completed"
+```
+
+#### Search by Conversation UUID
+Find all entries for a specific conversation.
+
+**Request:**
+```bash
+curl "https://e8097d851324.ngrok-free.app/callback?conversation_uuid=CON-765ac2c5-8191-45fe-9ef3-c44ef1138868"
+```
+
+#### Multi-Field Search
+Search using multiple criteria (AND operation).
+
+**Request:**
+```bash
+curl "https://e8097d851324.ngrok-free.app/callback?status=completed&duration=1"
+```
+
+**Response:**
+```json
+{
+  "query": {
+    "status": "completed",
+    "duration": "1"
+  },
+  "total_matches": 3,
+  "data": [
+    // ... matching entries
+  ]
+}
+```
+
+### Color-Coded Logging
+The server highlights important keywords in console logs:
+
+- **`uuid`**: Blinking yellow
+- **`conversation_uuid`**: Blinking yellow  
+- **`status`**: Blinking cyan
+- **"Stored callback data"**: Yellow text
+
+### Use Cases
+- **Debug Webhooks**: Track callback data from external services
+- **Audit Trail**: Search conversation history by UUID
+- **Status Monitoring**: Filter by status values
+- **Integration Testing**: Verify callback data structure and content
+
+### Sample Integration with Vonage
 ```json
 {
   "eventUrl": ["https://e8097d851324.ngrok-free.app/callback"],
   "eventMethod": "POST"
 }
-```
-
-**Example curl request:**
-```bash
-curl -X POST https://e8097d851324.ngrok-free.app/callback \
-  -H "Content-Type: application/json" \
-  -d '{"foo": "bar", "number": 42}'
 ```
 
 ## NCCO Endpoints
