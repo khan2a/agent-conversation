@@ -439,10 +439,31 @@ async def get_speech_results(conversation_uuid: Optional[str] = Query(None, desc
 
 
 @app.get("/ncco/connect")
-def ncco_connect(endpoint: str = Query(..., description="Endpoint string, e.g. ws://, sip:, or phone number")) -> JSONResponse:
+def ncco_connect(request: Request, endpoint: str = Query(..., description="Endpoint string, e.g. ws://, sip:, or phone number")) -> JSONResponse:
     # Get HOST_NAME from environment or use default
     host_name = os.environ.get("HOST_NAME", "http://localhost:8000")
     event_url = f"{host_name.rstrip('/')}/callback"
+
+    # Get all query parameters
+    query_params = dict(request.query_params)
+    
+    # Parse headers parameter if present
+    headers_dict = None
+    if "headers" in query_params:
+        headers_param = query_params["headers"]
+        try:
+            # Parse headers format: {key1:value1,key2:value2}
+            headers_param = headers_param.strip('{}')
+            headers_dict = {}
+            if headers_param:
+                for pair in headers_param.split(','):
+                    if ':' in pair:
+                        key, value = pair.split(':', 1)
+                        headers_dict[key.strip()] = value.strip()
+            logging.info(f"Parsed headers: {headers_dict}")
+        except Exception as e:
+            logging.error(f"Error parsing headers parameter: {e}")
+            headers_dict = None
 
     # Determine endpoint type and build NCCO accordingly
     endpoint_obj = None
@@ -455,16 +476,27 @@ def ncco_connect(endpoint: str = Query(..., description="Endpoint string, e.g. w
             "uri": endpoint,
             "content-type": content_type
         }
+        
+        # Add headers if present
+        if headers_dict:
+            endpoint_obj["headers"] = headers_dict
+            
     elif endpoint.startswith("sip:"):
         endpoint_obj = {
             "type": "sip",
             "uri": endpoint
         }
+        # Add headers if present
+        if headers_dict:
+            endpoint_obj["headers"] = headers_dict
+            
     elif endpoint.isdigit() or (endpoint.startswith("+") and endpoint[1:].isdigit()):
         endpoint_obj = {
             "type": "phone",
             "number": endpoint
         }
+        # Note: Headers typically not applicable to phone endpoints
+        
     else:
         logging.error(f"Unsupported or invalid endpoint: {endpoint}")
         return JSONResponse(
