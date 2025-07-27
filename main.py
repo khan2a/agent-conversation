@@ -1,3 +1,6 @@
+import uvicorn
+import time
+from functools import wraps
 import os
 import logging
 from pathlib import Path
@@ -263,6 +266,17 @@ def process_speech_results(payload: dict) -> None:
     logging.info(f"{Colors.YELLOW}Total speech conversations stored: {len(speech_storage)}{Colors.RESET}")
 
 
+def timeit_sec(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        elapsed_ms = (time.time() - start_time)
+        logging.info(f"{Colors.CYAN}Total time to generate NCCO: {elapsed_ms:.2f} sec.{Colors.RESET}")
+        return result
+    return wrapper
+
+@timeit_sec
 def generate_speech_response_ncco(conversation_uuid: str, event_url: str, ai_agent_func) -> List[dict]:
     """
     Generate NCCO response based on stored speech for a conversation.
@@ -294,7 +308,7 @@ def generate_speech_response_ncco(conversation_uuid: str, event_url: str, ai_age
                 "type": ["speech"]
             }
         ]
-        logging.info(f"{Colors.YELLOW}Generated NCCO with AI response for {conversation_uuid}: '{ai_response}'{Colors.RESET}")
+        logging.info(f"{Colors.YELLOW}Generated NCCO with AI response for {conversation_uuid}:\n'{ncco}'{Colors.RESET}")
         return ncco
     else:
         # No speech result found, use default greeting
@@ -515,6 +529,4 @@ def ncco_connect(request: Request, endpoint: str = Query(..., description="Endpo
 
 
 if __name__ == "__main__":
-    import uvicorn
-
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
