@@ -6,3 +6,4 @@ ruff
 flake8
 black
 openai>=0.27.0
+aiofiles>=24.1.0

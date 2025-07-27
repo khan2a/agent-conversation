@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  websocket-server:
+    build: .
+    container_name: websocket-server
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./audio_files:/app/audio_files
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

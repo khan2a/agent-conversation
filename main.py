@@ -24,6 +24,8 @@ class Colors:
     CYAN = '\033[96m'
     BLINK = '\033[5m'
     RESET = '\033[0m'
+    MAGENTA = '\033[95m'
+# Ensure the audio_files directory exi
 
 # In-memory storage for callback data
 callback_storage: List[Dict[str, Any]] = []
@@ -160,7 +162,7 @@ def query_openai(stored_text: str) -> str:
         
         # Extract the assistant's reply
         reply = response.choices[0].message.content
-        logging.info(f"{Colors.CYAN}OpenAI response for '{stored_text}': '{reply}'{Colors.RESET}")
+        logging.info(f"{Colors.MAGENTA}OpenAI response for '{stored_text}': '{reply}'{Colors.RESET}")
         return reply
         
     except Exception as e:
@@ -262,7 +264,7 @@ def process_speech_results(payload: dict) -> None:
     # Store only the highest confidence text for this conversation
     speech_storage[conversation_uuid] = highest_confidence_text
     
-    logging.info(f"{Colors.CYAN}Stored highest confidence speech for {conversation_uuid}: '{highest_confidence_text}' (confidence: {highest_confidence_score}){Colors.RESET}")
+    logging.info(f"{Colors.MAGENTA}Stored highest confidence speech for {conversation_uuid}: '{highest_confidence_text}' (confidence: {highest_confidence_score}){Colors.RESET}")
     logging.info(f"{Colors.YELLOW}Total speech conversations stored: {len(speech_storage)}{Colors.RESET}")
 
 
