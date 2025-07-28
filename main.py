@@ -11,6 +11,11 @@ from routers.websocket_audio import router as websocket_audio_router
 from pydantic import RootModel
 from dotenv import load_dotenv
 import openai
+import httpx
+import asyncio
+import uuid
+import jwt
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,6 +30,7 @@ class Colors:
     BLINK = '\033[5m'
     RESET = '\033[0m'
     MAGENTA = '\033[95m'
+    GREEN = '\033[92m'
 # Ensure the audio_files directory exi
 
 # In-memory storage for callback data
@@ -32,6 +38,7 @@ callback_storage: List[Dict[str, Any]] = []
 
 # In-memory storage for speech results (conversation_uuid -> highest confidence text)
 speech_storage: Dict[str, str] = {}
+
 
 app = FastAPI()
 
@@ -170,19 +177,54 @@ def query_openai(stored_text: str) -> str:
         return "I'm sorry, I encountered an error processing your request."
 
 
-def query_ollama(stored_text: str) -> str:
+async def query_ollama(stored_text: str) -> str:
     """
     Send a query to Ollama and retrieve the response.
-    Placeholder implementation for now.
     
     Args:
         stored_text: The text to send to Ollama
         
     Returns:
-        The response from Ollama (currently a placeholder)
+        The response from Ollama (extracted from message.content)
     """
-    logging.info(f"{Colors.CYAN}Ollama placeholder response for '{stored_text}'{Colors.RESET}")
-    return f"you said {stored_text}"
+    try:
+        # Prepare the request payload for Ollama chat API
+        request_payload = {
+            "model": "llama3.2",
+            "stream": False,
+            "messages": [
+                {"role": "user", "content": stored_text}
+            ]
+        }
+        
+        logging.info(f"{Colors.CYAN}Sending request to Ollama for: '{stored_text}'{Colors.RESET}")
+        
+        # Make the API call to Ollama
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "http://192.168.1.96:11434/api/chat",
+                json=request_payload,
+                timeout=60.0  # Increased timeout for Ollama's slower response
+            )
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                
+                # Extract the message content from the response
+                if "message" in response_data and "content" in response_data["message"]:
+                    ai_response = response_data["message"]["content"]
+                    logging.info(f"{Colors.MAGENTA}Ollama response for '{stored_text}': '{ai_response}'{Colors.RESET}")
+                    return ai_response
+                else:
+                    logging.error(f"Unexpected Ollama response format: {response_data}")
+                    return "I am sorry, could you repeat yourself again?"
+            else:
+                logging.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return "I am sorry, could you repeat yourself again?"
+                
+    except Exception as e:
+        logging.error(f"Error querying Ollama: {e}")
+        return "I am sorry, could you repeat yourself again?"
 
 
 def get_ai_agent_function(agent_type: str):
@@ -193,14 +235,100 @@ def get_ai_agent_function(agent_type: str):
         agent_type: Either 'openai' or 'ollama'
         
     Returns:
-        The corresponding AI query function
+        The corresponding AI query function (async for ollama, sync for openai)
     """
     if agent_type == "openai":
         return query_openai
     elif agent_type == "ollama":
+        # Note: Ollama responses can take up to 40 seconds
+        logging.info(f"{Colors.YELLOW}Using Ollama - expect up to 40 seconds for response{Colors.RESET}")
         return query_ollama
     else:
         raise ValueError(f"Unsupported AI agent type: {agent_type}")
+
+
+async def update_call_with_ncco(call_uuid: str, ncco: List[dict]) -> None:
+    """
+    Update a call with new NCCO using Vonage Voice API.
+    
+    Args:
+        call_uuid: The UUID of the call to update
+        ncco: The NCCO array to send
+    """
+    try:
+        # Get Vonage credentials from environment
+        vonage_app_id = os.environ.get("VONAGE_APP_ID")
+        vonage_private_key_path = os.environ.get("VONAGE_PRIVATE_KEY_PATH")
+        
+        logging.info(f"{Colors.CYAN}Attempting to update call {call_uuid} with NCCO{Colors.RESET}")
+        logging.info(f"{Colors.CYAN}VONAGE_APP_ID: {vonage_app_id}{Colors.RESET}")
+        logging.info(f"{Colors.CYAN}VONAGE_PRIVATE_KEY_PATH: {vonage_private_key_path}{Colors.RESET}")
+        
+        if not vonage_app_id or not vonage_private_key_path:
+            logging.error("VONAGE_APP_ID or VONAGE_PRIVATE_KEY_PATH not found in environment variables")
+            logging.error("Please set these environment variables to enable Vonage API integration")
+            return
+        
+        # Check if private key file exists
+        if not os.path.exists(vonage_private_key_path):
+            logging.error(f"Private key file not found: {vonage_private_key_path}")
+            return
+        
+        # Read private key
+        with open(vonage_private_key_path, 'r') as f:
+            private_key = f.read()
+        
+        logging.info(f"{Colors.CYAN}Private key loaded successfully{Colors.RESET}")
+        
+        # Create JWT token (simplified - in production, use proper JWT library)
+        import time
+        
+        payload = {
+            'application_id': vonage_app_id,
+            'iat': int(time.time()),
+            'exp': int(time.time()) + 3600,  # 1 hour expiry
+            'jti': str(uuid.uuid4())
+        }
+        
+        token = jwt.encode(payload, private_key, algorithm='RS256')
+        logging.info(f"{Colors.CYAN}JWT token generated successfully{Colors.RESET}")
+        
+        # Prepare the request payload
+        request_payload = {
+            "action": "transfer",
+            "destination": {
+                "type": "ncco",
+                "ncco": ncco
+            }
+        }
+        
+        logging.info(f"{Colors.CYAN}Request payload: {json.dumps(request_payload, indent=2)}{Colors.RESET}")
+        
+        # Make the API call
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                f"https://api.nexmo.com/v1/calls/{call_uuid}",
+                json=request_payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30.0
+            )
+            
+            logging.info(f"{Colors.CYAN}Vonage API response status: {response.status_code}{Colors.RESET}")
+            logging.info(f"{Colors.CYAN}Vonage API response headers: {dict(response.headers)}{Colors.RESET}")
+            logging.info(f"{Colors.CYAN}Vonage API response body: {response.text}{Colors.RESET}")
+            
+            if response.status_code == 200:
+                logging.info(f"{Colors.GREEN}Successfully updated call {call_uuid} with NCCO{Colors.RESET}")
+            else:
+                logging.error(f"Failed to update call {call_uuid}: {response.status_code} - {response.text}")
+                
+    except Exception as e:
+        logging.error(f"Error updating call {call_uuid} with NCCO: {e}")
+        import traceback
+        logging.error(f"Full traceback: {traceback.format_exc()}")
 
 
 @app.get("/audio/{filename}")
@@ -256,16 +384,21 @@ def process_speech_results(payload: dict) -> None:
     if not conversation_uuid or not speech_results:
         return
     
-    # Find the result with highest confidence
-    highest_confidence_result = max(speech_results, key=lambda x: float(x.get('confidence', 0)))
-    highest_confidence_text = highest_confidence_result.get('text', '')
-    highest_confidence_score = highest_confidence_result.get('confidence', '0')
-    
-    # Store only the highest confidence text for this conversation
-    speech_storage[conversation_uuid] = highest_confidence_text
-    
-    logging.info(f"{Colors.MAGENTA}Stored highest confidence speech for {conversation_uuid}: '{highest_confidence_text}' (confidence: {highest_confidence_score}){Colors.RESET}")
-    logging.info(f"{Colors.YELLOW}Total speech conversations stored: {len(speech_storage)}{Colors.RESET}")
+    # Find the result with highest confidence, handling None values
+    try:
+        highest_confidence_result = max(speech_results, key=lambda x: float(x.get('confidence', 0) or 0))
+        highest_confidence_text = highest_confidence_result.get('text', '')
+        highest_confidence_score = highest_confidence_result.get('confidence', '0')
+        
+        # Store only the highest confidence text for this conversation
+        speech_storage[conversation_uuid] = highest_confidence_text
+        
+        logging.info(f"{Colors.MAGENTA}Stored highest confidence speech for {conversation_uuid}: '{highest_confidence_text}' (confidence: {highest_confidence_score}){Colors.RESET}")
+        logging.info(f"{Colors.YELLOW}Total speech conversations stored: {len(speech_storage)}{Colors.RESET}")
+    except (ValueError, TypeError) as e:
+        logging.error(f"Error processing speech results: {e}")
+        # Store empty text to indicate processing error
+        speech_storage[conversation_uuid] = ""
 
 
 def timeit_sec(func):
@@ -279,7 +412,7 @@ def timeit_sec(func):
     return wrapper
 
 @timeit_sec
-def generate_speech_response_ncco(conversation_uuid: str, event_url: str, ai_agent_func) -> List[dict]:
+async def generate_speech_response_ncco(conversation_uuid: str, event_url: str, ai_agent_func) -> List[dict]:
     """
     Generate NCCO response based on stored speech for a conversation.
     
@@ -294,7 +427,17 @@ def generate_speech_response_ncco(conversation_uuid: str, event_url: str, ai_age
     if conversation_uuid and conversation_uuid in speech_storage:
         # Get the latest text stored for this conversation and query AI agent
         stored_text = speech_storage[conversation_uuid]
-        ai_response = ai_agent_func(stored_text)
+        
+        # Check if speech processing failed or text is empty
+        if not stored_text or stored_text.strip() == "":
+            logging.info(f"{Colors.YELLOW}Speech processing failed or empty text for {conversation_uuid}, using fallback response{Colors.RESET}")
+            ai_response = "I am sorry, could you repeat yourself again?"
+        else:
+            # Handle both sync and async AI agent functions
+            if asyncio.iscoroutinefunction(ai_agent_func):
+                ai_response = await ai_agent_func(stored_text)
+            else:
+                ai_response = ai_agent_func(stored_text)
         
         ncco = [
             {
@@ -356,7 +499,7 @@ def generate_initial_speech_ncco(event_url: str) -> List[dict]:
     ]
 
 
-async def handle_stts_request(request: Request, agent_type: str) -> JSONResponse:
+async def handle_stts_request(request: Request, agent_type: str) -> Response:
     """
     Common handler for STTS requests that delegates to appropriate AI agent.
     
@@ -365,7 +508,7 @@ async def handle_stts_request(request: Request, agent_type: str) -> JSONResponse
         agent_type: The AI agent type ('openai' or 'ollama')
         
     Returns:
-        JSONResponse with appropriate NCCO
+        Response with appropriate NCCO or HTTP 204 for async processing
     """
     # Get HOST_NAME from environment or use default
     host_name = os.environ.get("HOST_NAME", "http://localhost:8000")
@@ -392,23 +535,86 @@ async def handle_stts_request(request: Request, agent_type: str) -> JSONResponse
         callback_storage.append(payload)
         
         # Process speech results if available
-        process_speech_results(payload)
+        try:
+            process_speech_results(payload)
+        except (ValueError, TypeError) as e:
+            logging.error(f"Error processing speech results: {e}")
+            # Continue processing with fallback response
         
         logging.info(f"{Colors.CYAN}Stored speech input data. Total callback entries: {len(callback_storage)}{Colors.RESET}")
         
-        # Generate NCCO response based on stored speech
+        # Generate NCCO response based on stored speech immediately
         conversation_uuid = payload.get('conversation_uuid')
-        ncco = generate_speech_response_ncco(conversation_uuid, event_url, ai_agent_func)
+        ncco = await generate_speech_response_ncco(conversation_uuid, event_url, ai_agent_func)
         
+        logging.info(f"{Colors.GREEN}Returning NCCO immediately for {agent_type} speech input{Colors.RESET}")
         return JSONResponse(content=ncco)
         
     except Exception as e:
         logging.error(f"Error parsing {agent_type} speech input callback: {e}")
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
+        # Return fallback response instead of HTTP 400
+        fallback_ncco = [
+            {
+                "action": "talk",
+                "text": "I am sorry, could you repeat yourself again?",
+                "style": 0,
+                "language": "en-GB",
+                "bargeIn": True
+            },
+            {
+                "action": "input",
+                "eventUrl": [event_url],
+                "type": ["speech"]
+            }
+        ]
+        logging.info(f"{Colors.YELLOW}Returning fallback NCCO due to error: {e}{Colors.RESET}")
+        return JSONResponse(content=fallback_ncco)
+
+
+async def async_process_speech_and_update_call(
+    conversation_uuid: str, 
+    event_url: str, 
+    ai_agent_func, 
+    call_uuid: str
+) -> None:
+    """
+    Asynchronously process speech results and update the call with new NCCO.
+    
+    Args:
+        conversation_uuid: The conversation UUID to look up
+        event_url: The event URL for the input action
+        ai_agent_func: The AI agent function to use for generating responses
+        call_uuid: The UUID of the call to update
+    """
+    try:
+        # Generate NCCO response based on stored speech
+        ncco = await generate_speech_response_ncco(conversation_uuid, event_url, ai_agent_func)
+        
+        # Check if the call is still active by looking at recent callbacks
+        # If we received a "completed" status for this call, don't try to update it
+        call_completed = False
+        for entry in callback_storage[-10:]:  # Check last 10 entries
+            if entry.get('uuid') == call_uuid and entry.get('status') == 'completed':
+                call_completed = True
+                logging.info(f"{Colors.YELLOW}Call {call_uuid} has already completed, skipping NCCO update{Colors.RESET}")
+                break
+        
+        if call_completed:
+            logging.info(f"{Colors.YELLOW}Skipping NCCO update for completed call {call_uuid}{Colors.RESET}")
+            return
+        
+        # Add a small delay to ensure the call is still active
+        await asyncio.sleep(0.5)
+        
+        # Update the call with the new NCCO
+        await update_call_with_ncco(call_uuid, ncco)
+        
+    except Exception as e:
+        logging.error(f"Error in async speech processing for call {call_uuid}: {e}")
 
 
 @app.api_route("/stts/openai", methods=["GET", "POST"])
-async def stts_openai_endpoint(request: Request) -> JSONResponse:
+async def stts_openai_endpoint(request: Request) -> Response:
     """
     Speech-to-Text Service endpoint using OpenAI for responses.
     """
@@ -416,7 +622,7 @@ async def stts_openai_endpoint(request: Request) -> JSONResponse:
 
 
 @app.api_route("/stts/ollama", methods=["GET", "POST"])
-async def stts_ollama_endpoint(request: Request) -> JSONResponse:
+async def stts_ollama_endpoint(request: Request) -> Response:
     """
     Speech-to-Text Service endpoint using Ollama for responses.
     """
@@ -424,7 +630,7 @@ async def stts_ollama_endpoint(request: Request) -> JSONResponse:
 
 
 @app.api_route("/stts", methods=["GET", "POST"])
-async def stts_endpoint(request: Request) -> JSONResponse:
+async def stts_endpoint(request: Request) -> Response:
     """
     Default Speech-to-Text Service endpoint that uses OpenAI.
     For backward compatibility.
