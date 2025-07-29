@@ -1,4 +1,4 @@
-# Agentic Conversation Server
+# Agentic Conversation Server (Speech-to-Text -> AI Agent -> Text-to-Speech)
 
 A modular FastAPI WebSocket server for streaming audio data, designed for easy expansion (e.g., NLP processing).
 
